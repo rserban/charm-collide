@@ -1,0 +1,20 @@
+/// Main example module.
+mainmodule hello {
+
+  /// The collidecharm module must be explicitly declared as external.
+  /// Note: when linking to the charm++ collide library, this is done automatically.
+  extern module collidecharm;
+
+  readonly CProxy_main mid;
+  readonly CProxy_Hello arr;
+
+  mainchare main {
+    entry main(CkArgMsg*);
+    entry void maindone(void);
+  };
+
+  array [1D] Hello {
+    entry Hello(CollideHandle collide);
+    entry void DoIt(void);
+  };
+};
