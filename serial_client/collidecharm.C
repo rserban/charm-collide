@@ -78,48 +78,61 @@ void CollideBoxesPrio(CollideHandle h,int chunkNo,
 // ===============================================================================
 //                    objListMsg
 // ===============================================================================
-objListMsg::objListMsg(
-		int n_,CollideObjRec *obj_, 
-		const returnReceipt &receipt_) 
-	:isHeapAllocated(true),receipt(receipt_),
-	 n(n_),obj(obj_)
+
+objListMsg::objListMsg(int n_,
+                       CollideObjRec *obj_, 
+                       const returnReceipt &receipt_) 
+  : isHeapAllocated(true),
+    receipt(receipt_),
+    n(n_),
+    obj(obj_)
 {}
 
 void objListMsg::freeHeapAllocated()
 {
-	if (!isHeapAllocated) return;
-	free(obj);obj=NULL;
+  if (!isHeapAllocated) return;
+  free(obj);
+  obj=NULL;
 }
 
-//This gives the byte offsets & sizes needed by each field
-#define objListMsg_OFFSETS \
-	int offM=0; \
-	int cntM=sizeof(objListMsg); \
-	int offB=offM+ALIGN8(cntM); \
-	int cntB=sizeof(CollideObjRec)*m->n;\
-
+/// Byte offsets & sizes needed by each field in an objListMsg message.
+#define objListMsg_OFFSETS                      \
+  int offM=0;                                   \
+  int cntM=sizeof(objListMsg);                  \
+  int offB=offM+ALIGN8(cntM);                   \
+  int cntB=sizeof(CollideObjRec)*m->n;          \
+  
 void *objListMsg::pack(objListMsg *m)
 {
-	objListMsg_OFFSETS
-	int offEnd=offB+cntB;
-	//Allocate a new message buffer and copy our fields into it
-	void *buf = CkAllocBuffer(m, offEnd);
-	char *cbuf=(char *)buf;
-	memcpy(cbuf+offM,m,cntM);
-	memcpy(cbuf+offB,m->obj,cntB);
-	delete m;
-	return buf;
+  objListMsg_OFFSETS
+    int offEnd=offB+cntB;
+  //Allocate a new message buffer and copy our fields into it
+  void *buf = CkAllocBuffer(m, offEnd);
+  char *cbuf=(char *)buf;
+  memcpy(cbuf+offM,m,cntM);
+  memcpy(cbuf+offB,m->obj,cntB);
+  delete m;
+  return buf;
 }
 
 objListMsg *objListMsg::unpack(void *buf)
 {
-	//Unpack ourselves in-place from the buffer; with
-	// our arrays pointing into the allocated message data.
-	objListMsg *m = new (buf) objListMsg;
-	char *cbuf=(char *)buf;
-	objListMsg_OFFSETS
-	m->obj=(CollideObjRec *)(cbuf+offB);
-	return m;
+  // Unpack ourselves in-place from the buffer; with
+  // our arrays pointing into the allocated message data.
+  objListMsg *m = new (buf) objListMsg;
+  char *cbuf=(char *)buf;
+  objListMsg_OFFSETS
+    m->obj=(CollideObjRec *)(cbuf+offB);
+  return m;
+}
+
+void objListMsg::returnReceipt::send(void)
+{
+  CProxy_collideMgr p(gid);
+  if (onPE==CkMyPe()) // Just send directly to the local branch
+    p.ckLocalBranch()->voxelMessageRecvd();
+  else                // Deliver via the network
+    p[onPE].voxelMessageRecvd();
 }
 
 /*************** hashCache ***************
@@ -403,49 +416,58 @@ void syncReductionMgr::childDone(int stepCount)
 //                   collideMgr
 // ===============================================================================
 
-// Extract the (signed) low 23 bits of src--
-// this is the IEEE floating-point mantissa used as a grid index
+/// Extract the (signed) low 23 bits of src.
+/// This is the IEEE floating-point mantissa used as a grid index.
 static int low23(unsigned int src)
 {
-	unsigned int loMask=0x007fFFffu;//Low 23 bits set
-	unsigned int offset=0x00400000u;
-	return (src&loMask)-offset;
+  unsigned int loMask = 0x007fFFffu; //Low 23 bits set
+  unsigned int offset = 0x00400000u;
+  return (src & loMask) - offset;
 }
-static const char * voxName(int ix,int iy,int iz,char *buf) {
-	int x=low23(ix);
-	int y=low23(iy);
-	int z=low23(iz);
-	sprintf(buf,"(%d,%d,%d)",x,y,z);
-	return buf;
+
+/// Convert 3 integer coordinates into a string name.
+static const char * voxName(int ix, int iy, int iz, char *buf) {
+  int x = low23(ix);
+  int y = low23(iy);
+  int z = low23(iz);
+  sprintf(buf,"(%d,%d,%d)",x,y,z);
+  return buf;
 }
-static const char * voxName(const CkIndex3D &idx,char *buf) {
-	return voxName(idx.x,idx.y,idx.z,buf);
+
+/// Convert the voxel ID (3 integer coordinates) into a string name.
+static const char * voxName(const CkIndex3D &idx, char *buf) {
+  return voxName(idx.x, idx.y, idx.z, buf);
 }
 
 
 // Construct a collide manager
 collideMgr::collideMgr(const CollideGrid3d &gridMap_,
-		const CProxy_collideClient &client_,
-		const CProxy_collideVoxel &voxels)
-	:thisproxy(thisgroup), voxelProxy(voxels), 
-	 gridMap(gridMap_), client(client_), aggregator(gridMap,this) 
+                       const CProxy_collideClient &client_,
+                       const CProxy_collideVoxel &voxels)
+  : thisproxy(thisgroup), 
+    voxelProxy(voxels), 
+    gridMap(gridMap_), 
+    client(client_), 
+    aggregator(gridMap,this) 
 {
-	steps=0;
-	nContrib=0;
-	contribCount=0;
-	msgsSent=msgsRecvd=0;
+  steps=0;
+  nContrib=0;
+  contribCount=0;
+  msgsSent=msgsRecvd=0;
 }
 
-// Maintain contributor registration count
+// Register contributor: Maintain contributor registration count
 void collideMgr::registerContributor(int chunkNo) 
 {
-	nContrib++;
-	CM_STATUS("Contributor register: now "<<nContrib);
+  nContrib++;
+  CM_STATUS("Contributor register: now "<<nContrib);
 }
+
+// Unregister contributor: Maintain contributor registration count
 void collideMgr::unregisterContributor(int chunkNo) 
 {
-	nContrib--;
-	CM_STATUS("Contributor unregister: now "<<nContrib);
+  nContrib--;
+  CM_STATUS("Contributor unregister: now "<<nContrib);
 }
 
 // Clients call this to contribute their triangle lists
@@ -456,48 +478,45 @@ void collideMgr::contribute(int chunkNo,
 {
   //printf("[%d] Receiving contribution from %d\n",CkMyPe(), chunkNo);
   CM_STATUS("collideMgr::contribute "<<n<<" boxes from "<<chunkNo);
+
   aggregator.aggregate(CkMyPe(), chunkNo, n, boxes, prio);
   aggregator.send(); // Deliver all outgoing messages
+
   if (++contribCount==nContrib) { // That's everybody
     //aggregator.send(); // Deliver all outgoing messages
     //if (getStepCount()%8==7)
     aggregator.compact(); // Blow away all the old voxels (saves memory)
     tryAdvance();
   }
+
   //printf("[%d] DONE receiving contribution from %d\n",CkMyPe(), chunkNo);
 }
 
+/// Recast a 3D integer location as an index into a 3D array (of voxels).
 inline CkArrayIndex3D buildIndex(const CollideLoc3d &l) 
-	{return CkArrayIndex3D(l.x,l.y,l.z);}
+{
+  return CkArrayIndex3D(l.x,l.y,l.z);
+}
 
 // voxelAggregators deliver messages to voxels via this bottleneck
 void collideMgr::sendVoxelMessage(const CollideLoc3d &dest,
-	int n,CollideObjRec *obj)
+                                  int n,CollideObjRec *obj)
 {
-	char destName[200];
-	CM_STATUS("collideMgr::sendVoxelMessage to "<<voxName(dest.x,dest.y,dest.z,destName));
-	msgsSent++;
-	objListMsg *msg=new objListMsg(n,obj,
-			objListMsg::returnReceipt(thisgroup,CkMyPe()));
-	voxelProxy[buildIndex(dest)].add(msg);
+  char destName[200];
+  CM_STATUS("collideMgr::sendVoxelMessage to " << voxName(dest.x,dest.y,dest.z,destName));
+  msgsSent++;
+  objListMsg *msg=new objListMsg(n,obj,
+                                 objListMsg::returnReceipt(thisgroup,CkMyPe()));
+  voxelProxy[buildIndex(dest)].add(msg);
 }
 
-void objListMsg::returnReceipt::send(void)
-{
-	CProxy_collideMgr p(gid);
-	if (onPE==CkMyPe()) //Just send directly to the local branch
-		p.ckLocalBranch()->voxelMessageRecvd();
-	else //Deliver via the network
-		p[onPE].voxelMessageRecvd();
-}
-
-//collideVoxels send a return receipt here
+// collideVoxels send a return receipt here.
 void collideMgr::voxelMessageRecvd(void)
 {
-	msgsRecvd++;
-	CM_STATUS("collideMgr::voxelMessageRecvd: "<<msgsRecvd<<" of "<<msgsSent);
-	//All the voxels we send messages to have received them--
-	tryAdvance();
+  msgsRecvd++;
+  CM_STATUS("collideMgr::voxelMessageRecvd: "<<msgsRecvd<<" of "<<msgsSent);
+  // All the voxels we send messages to have received them?
+  tryAdvance();
 }
 
 //Check if we're barren-- if so, advance now
@@ -510,14 +529,14 @@ void collideMgr::pleaseAdvance(void)
 //Attempt to finish the voxel send/recv step
 void collideMgr::tryAdvance(void)
 {
-	CM_STATUS("tryAdvance: "<<nContrib-contribCount<<" contrib, "<<msgsSent-msgsRecvd<<" msg")
-	if ((contribCount==nContrib) && (msgsSent==msgsRecvd)) {
-		CM_STATUS("advancing");
-		advance();
-		steps++;
-		contribCount=0;
-		msgsSent=msgsRecvd=0;
-	}
+  CM_STATUS("tryAdvance: "<<nContrib-contribCount<<" contrib, "<<msgsSent-msgsRecvd<<" msg")
+    if ((contribCount==nContrib) && (msgsSent==msgsRecvd)) {
+      CM_STATUS("advancing");
+      advance();
+      steps++;
+      contribCount=0;
+      msgsSent=msgsRecvd=0;
+    }
 }
 
 //This is called on PE 0 once the voxel send/recv reduction is finished
@@ -529,124 +548,135 @@ void collideMgr::reductionFinished(void)
 }
 
 
-/********************** collideVoxel *********************/
+// ===============================================================================
+//                          collideVoxel
+// ===============================================================================
 
-iSeg1d collideVoxel_extents[3]={
-	iSeg1d(100,-100),iSeg1d(100,-100),iSeg1d(100,-100)};
+iSeg1d collideVoxel_extents[3] = {
+  iSeg1d(100,-100),
+  iSeg1d(100,-100),
+  iSeg1d(100,-100)
+};
 
 
-//Print debugging state information
+// Print debugging state information
 void collideVoxel::status(const char *msg)
 {
-	int x=low23(thisIndex.x);
-	int y=low23(thisIndex.y);
-	int z=low23(thisIndex.z);
-	CkPrintf("Pe %d, voxel (%d,%d,%d)> %s\n",CkMyPe(),x,y,z,msg);
-}
-void collideVoxel::emptyMessages()
-{
-	for (int i=0;i<msgs.length();i++) delete msgs[i];
-	msgs.length()=0;
+  int x=low23(thisIndex.x);
+  int y=low23(thisIndex.y);
+  int z=low23(thisIndex.z);
+  CkPrintf("Pe %d, voxel (%d,%d,%d)> %s\n",CkMyPe(),x,y,z,msg);
 }
 
-/* CollideVoxel is created using [createhere], so 
-   its constructor can't take any arguments: */
+void collideVoxel::emptyMessages()
+{
+  for (int i=0;i<msgs.length();i++) delete msgs[i];
+  msgs.length()=0;
+}
+
 collideVoxel::collideVoxel(void)
 {
-	CC_STATUS("created");
-	collideVoxel_extents[0].add(low23(thisIndex.x));
-	collideVoxel_extents[1].add(low23(thisIndex.y));
-	collideVoxel_extents[2].add(low23(thisIndex.z));
+  CC_STATUS("created");
+  collideVoxel_extents[0].add(low23(thisIndex.x));
+  collideVoxel_extents[1].add(low23(thisIndex.y));
+  collideVoxel_extents[2].add(low23(thisIndex.z));
 }
+
 collideVoxel::collideVoxel(CkMigrateMessage *m)
 {
-	CC_STATUS("arrived from migration");
+  CC_STATUS("arrived from migration");
 }
+
 collideVoxel::~collideVoxel()
 {
-	emptyMessages();
-	CC_STATUS("deleted. (migration depart)");
+  emptyMessages();
+  CC_STATUS("deleted. (migration depart)");
 }
+
 void collideVoxel::pup(PUP::er &p) {
-	if (msgs.length()!=0) {
-		status("Error!  Cannot migrate voxels with messages in tow!\n");
-		CkAbort("collideVoxel::pup cannot handle message case");
-	}
+  if (msgs.length()!=0) {
+    status("Error!  Cannot migrate voxels with messages in tow!\n");
+    CkAbort("collideVoxel::pup cannot handle message case");
+  }
 }
+
 void collideVoxel::add(objListMsg *msg)
 {
-	CC_STATUS("add message from "<<msg->getSource());
-	msg->sendReceipt();
-	msgs.push_back(msg);
+  CC_STATUS("add message from " << msg->getSource());
+  msg->sendReceipt();  // Send back the receipt packed with the message
+  msgs.push_back(msg); // Append to the list of messages
 }
 
 void collideVoxel::collide(const bbox3d &territory,CollisionList &dest)
 {
-	int m;
-	
+  int m;
+  
 #if 0  //Check if all the priorities are identical-- early exit if so
-	CC_STATUS("      early-exit (all prio. identical) test");
-	int firstPrio=msgs[0]->tri(0).id.prio;
-	bool allIdentical=true;
-	for (m=0;allIdentical && m<msgs.length();m++)
-		for (int i=0;i<msgs[m]->getNtris();i++)
-			if (msgs[m]->tri(i).id.prio!=firstPrio)
-			{ allIdentical=false; break;}
-	if (allIdentical) {CC_STATUS("      early-exit used!");return;}
+  CC_STATUS("      early-exit (all prio. identical) test");
+  int firstPrio=msgs[0]->tri(0).id.prio;
+  bool allIdentical=true;
+  for (m=0;allIdentical && m<msgs.length();m++)
+    for (int i=0;i<msgs[m]->getNtris();i++)
+      if (msgs[m]->tri(i).id.prio!=firstPrio)
+        { allIdentical=false; break;}
+  if (allIdentical) {CC_STATUS("      early-exit used!");return;}
 #endif
-	//Figure out how many objects we have total
-	int n=0;
-	for (m=0;m<msgs.length();m++) n+=msgs[m]->getObjects();
-	CollideOctant o(n,territory);
-	o.length()=0;
-	bbox3d big;big.infinity();
-	o.setBbox(big);
-	
-	CC_STATUS("      creating bbox, etc. for polys");
+  //Figure out how many objects we have total
+  int n=0;
+  for (m=0;m<msgs.length();m++) n+=msgs[m]->getObjects();
+  CollideOctant o(n,territory);
+  o.length()=0;
+  bbox3d big;big.infinity();
+  o.setBbox(big);
+  
+  CC_STATUS("      creating bbox, etc. for polys");
 #if COLLIDE_TRACE
-	bbox3d oBox; oBox.empty();
+  bbox3d oBox; oBox.empty();
 #endif
-	//Create records for each referenced poly
-	for (m=0;m<msgs.length();m++) {
-		const objListMsg &msg=*(msgs[m]);
-		for (int i=0;i<msg.getObjects();i++) {
-			o.push_fast(&msg.getObj(i));
+  //Create records for each referenced poly
+  for (m=0;m<msgs.length();m++) {
+    const objListMsg &msg=*(msgs[m]);
+    for (int i=0;i<msg.getObjects();i++) {
+      o.push_fast(&msg.getObj(i));
 #if COLLIDE_TRACE
-			oBox.add(msg.getObj(i).getBbox());
+      oBox.add(msg.getObj(i).getBbox());
 #endif
-		}
-	}
-	o.markHome(o.length());
-	COL_STATUS("    colliding polys");
-	COL_STATUS("\t\t\tXXX "<<o.length()<<" polys, "<<msgs.length()<<" msgs")
+    }
+  }
+  o.markHome(o.length());
+  COL_STATUS("    colliding polys");
+  COL_STATUS("\t\t\tXXX "<<o.length()<<" polys, "<<msgs.length()<<" msgs")
 #if COLLIDE_TRACE
-	territory.print("Voxel territory: ");
-	oBox.print(" Voxel objects: ");
-	CkPrintf("\n");
+  territory.print("Voxel territory: ");
+  oBox.print(" Voxel objects: ");
+  CkPrintf("\n");
 #endif
-	o.findCollisions(dest);
+  o.findCollisions(dest);
 }
 
 
 void collideVoxel::startCollision(int step,
-		const CollideGrid3d &gridMap,
-		const CProxy_collideClient &client)
+                                  const CollideGrid3d &gridMap,
+                                  const CProxy_collideClient &client)
 {
-	CC_STATUS("startCollision "<<step<<" on "<<msgs.length()<<" messages {");
-	
-	bbox3d territory(gridMap.grid2world(0,rSeg1d(thisIndex.x,thisIndex.x+1)),
-		gridMap.grid2world(1,rSeg1d(thisIndex.y,thisIndex.y+1)),
-		gridMap.grid2world(2,rSeg1d(thisIndex.z,thisIndex.z+1))
-	);
-	CollisionList colls;
-	collide(territory,colls);
-	client.ckLocalBranch()->collisions(this,step,colls);
-	
-	emptyMessages();
-	CC_STATUS("} startCollision");
+  CC_STATUS("startCollision "<<step<<" on "<<msgs.length()<<" messages {");
+  
+  // Map the extent of this voxel from grid coordinates to world coordinates
+  bbox3d territory(gridMap.grid2world(0,rSeg1d(thisIndex.x,thisIndex.x+1)),
+                   gridMap.grid2world(1,rSeg1d(thisIndex.y,thisIndex.y+1)),
+                   gridMap.grid2world(2,rSeg1d(thisIndex.z,thisIndex.z+1))
+                   );
+
+  CollisionList colls;
+  collide(territory,colls);
+  client.ckLocalBranch()->collisions(this,step,colls);
+  
+  emptyMessages();
+  CC_STATUS("} startCollision");
 }
 
 collideClient::~collideClient() {}
+
 
 /********************** serialCollideClient *****************/
 serialCollideClient::serialCollideClient(void) {

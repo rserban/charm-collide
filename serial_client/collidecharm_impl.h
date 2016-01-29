@@ -19,40 +19,66 @@ only when needed (for sending across processors).
 class objListMsg : public CMessage_objListMsg
 {
 public:
-	class returnReceipt {
-		CkGroupID gid;
-	public:
-		int onPE;
-		returnReceipt() {}
-		returnReceipt(CkGroupID gid_,int onPE_) :gid(gid_),onPE(onPE_) {}
-		void send(void);
-	};
+
+  /// Voxel message return receipt (private class of objListMsg).
+  /// A return receipt is created and packed with the outgoing message
+  /// (to the destination voxel). That message includes a return receipt
+  /// which the voxel sends back upon receiving the list of objects. 
+  class returnReceipt {
+    CkGroupID gid;  ///< ID of the collide manager group
+  public:
+    int onPE;
+    returnReceipt() {}
+    returnReceipt(CkGroupID gid_,int onPE_) :gid(gid_),onPE(onPE_) {}
+    void send(void);
+  };
+
 private:
-	bool isHeapAllocated;
-	returnReceipt receipt;
-	
-	int n;
-	CollideObjRec *obj; //Bounding boxes & IDs
-	
-	void freeHeapAllocated();
+  bool isHeapAllocated;
+  returnReceipt receipt;  ///< encapsulated return receipt
+  
+  int n;                  ///< number of object records
+  CollideObjRec *obj;     ///< object records (boxes & object IDs)
+  
+  void freeHeapAllocated();
+
 public:
-	objListMsg() :isHeapAllocated(false) {}
-	
-	//Hand control of these arrays over to this message,
-	// which will delete them when appropriate.
-	objListMsg(int n_,CollideObjRec *obj_,
-		const returnReceipt &receipt_);
-	~objListMsg() {freeHeapAllocated();}
-	
-	int getSource(void) {return receipt.onPE;}
-	void sendReceipt(void) {receipt.send();}
-	
-	int getObjects(void) const {return n;}
-	const CollideObjRec &getObj(int i) const {return obj[i];}
-	const bbox3d &bbox(int i) const {return obj[i].box;}
-	
-	static void *pack(objListMsg *m);
-	static objListMsg *unpack(void *m);
+
+  /// Default constructor.
+  objListMsg() : isHeapAllocated(false) {}
+
+  /// Construct a message from the specified objects.
+  /// Hand control of these arrays over to this message,
+  /// which will delete them when appropriate.
+  objListMsg(int n_,
+             CollideObjRec *obj_,
+             const returnReceipt &receipt_
+             );
+
+  /// Destructor.
+  /// Free memory for the message data.
+  ~objListMsg() {freeHeapAllocated();}
+  
+  /// Return the source PE of this message.
+  /// This is the PE of the collide manager that sends this message.
+  /// This information is encapsulated in the return receipt.
+  int getSource(void) {return receipt.onPE;}
+
+  /// Return the return receipt back to the source.
+  /// Defer to the return receipt object itself.
+  void sendReceipt(void) {receipt.send();}
+  
+  /// Return the number of objects in the message.
+  int getObjects(void) const {return n;}
+
+  /// Return the specified object record in the message.
+  const CollideObjRec &getObj(int i) const {return obj[i];}
+
+  /// Return the actual box in the specified object record in the message.
+  const bbox3d &bbox(int i) const {return obj[i].box;}
+  
+  static void *pack(objListMsg *m);
+  static objListMsg *unpack(void *m);
 };
 
 
@@ -223,6 +249,27 @@ private:
   int msgsSent; ///< messages sent out to voxels
   int msgsRecvd; ///< return-receipt messages received from voxels
 
+
+  /// This function attempts to finish the voxel send/recv step.
+  /// If all contributions have been made and all voxels returned
+  /// notifications of receipt of the obejcts dispatched to them,
+  /// the following steps are taken:
+  /// - invokes the parent's syncReductionMgr::advance() function
+  /// - increment the number of steps (this collision operation was completed)
+  /// - reset the counts of contribution received, messages sent, and receipts received
+  ///
+  /// The collide manager attempts to perform this operation (i.e.
+  /// the function tryAdvance is called) every time:
+  /// - a contribution is made (i.e. from within collideMgr::contribute)
+  /// - every time a voxel return receipt is received (i.e. from
+  ///   collideMgr::voxelMessageRecvd)
+  /// - from collideMgr::pleaseAdvance 
+  ///
+  /// \see collideMgr::contribute
+  /// \see collideMgr::voxelMessageRecvd
+  /// \see collideMgr::pleaseAdvance
+  /// \see syncReductionMgr::advance
+  ///
   void tryAdvance(void);
   
 protected:
@@ -258,36 +305,86 @@ public:
   void contribute(int chunkNo,
                   int n,const bbox3d *boxes,const int *prio);
   
-  /// voxelAggregators deliver messages to voxels via this bottleneck
-  void sendVoxelMessage(const CollideLoc3d &dest,
-                        int n,CollideObjRec *obj);
+  /// voxelAggregators deliver messages to voxels via this bottleneck.
+  /// Each voxelAggregator invokes this function, specifyig the destination
+  /// voxel (identified through its 3 integer coordinates), the number of 
+  /// boxes and actual boxes (all of which intersect the destination voxel).
+  ///
+  /// - increment number of messages sent
+  /// - create a message including all objects packed by the calling
+  ///   voxelAggregator
+  /// - add the list of objects to the destination voxel: this will create
+  ///   that particular voxel (i.e., entry in the 3D chare array of voxels)
+  ///   if that is the first time an object is dispatched to that grid cell.
+  void sendVoxelMessage(const CollideLoc3d &dest, ///< destination voxel ID (3 int coords)
+                        int n,                    ///< number of boxes
+                        CollideObjRec *obj        ///< object records (object ID + actual box)
+                        );
   
-  /// collideVoxels send a return receipt here
+  /// This function (entry method) is executed every time a return receipt
+  /// message is received from a voxel chare (i.e., collideVoxels send a
+  /// return receipt here).  It keeps track of the total number of receipts
+  /// returned (so it can now when all expected receipts have ben returned)
+  /// and attempts to complete the step by invoking tryAdvance.
   void voxelMessageRecvd(void);
 };
 
-/********************** collideVoxel ********************
-A sparse 3D array that represents a region of space where
-Collisions may occur.  Each step it accumulates triangle
-lists and then computes their intersection
-*/
+// ===============================================================================
+//                  collideVoxel
+// ===============================================================================
+// A sparse 3D array that represents a region of space where
+// Collisions may occur.  Each step it accumulates triangle
+// lists and then computes their intersection
 
+
+/// A region of space (a cell in the collision grid) where collisions may occur.
+/// collideVoxel are maintained in a 3D chare array (sparse), forming the
+/// collision grid.  This grid is sparse in the sense that a voxel is created
+/// only if they contain at least an object.
+///
+/// Voxels are migratable chares. However, they are first created on the
+/// PE of the contributor that first has an object that overlaps that
+/// voxel (the entry method add() is declared [createhere])
+/// 
 class collideVoxel : public CBase_collideVoxel
 {
-	growableBufferT<objListMsg *> msgs;
-	void status(const char *msg);
-	void emptyMessages();
-	void collide(const bbox3d &territory,CollisionList &dest);
+  growableBufferT<objListMsg *> msgs;  ///< list of messages coming from various branches of the collide manager group
+
+  /// Print state information (for debugging)
+  void status(const char *msg);
+
+  /// Destroy all messages and empty the list of messages.
+  void emptyMessages();
+
+  void collide(const bbox3d &territory,CollisionList &dest);
+
 public:
-	collideVoxel(void);
-	collideVoxel(CkMigrateMessage *m);
-	~collideVoxel();
-	void pup(PUP::er &p);
-	
-	void add(objListMsg *msg);
-	void startCollision(int step,
-		const CollideGrid3d &gridMap,
-		const CProxy_collideClient &client);
+
+  /// Constructor (entry method).
+  /// CollideVoxel is created using [createhere], so 
+  /// its constructor can't take any arguments
+  collideVoxel(void);
+
+  /// Constructor for migration.
+  collideVoxel(CkMigrateMessage *m);
+
+  /// Destructor: empty the array of messages.
+  ~collideVoxel();
+
+  /// Pack-unpack method.
+  /// Voxels can be migrated only when they have no messages in their list.
+  /// This function will abort if attempting to migrate a voxel with messages.
+  void pup(PUP::er &p);
+  
+  /// Receive a message with a list of objects that overlap this voxel
+  /// - send a receive receipt message back to the sender (this is done by
+  ///   effectively sending back the receipt that was packed in the message)
+  /// - add the message at the end of the list of messages
+  void add(objListMsg *msg);
+
+  void startCollision(int step,
+                      const CollideGrid3d &gridMap,
+                      const CProxy_collideClient &client);
 };
 
 

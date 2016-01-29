@@ -77,7 +77,7 @@ public:
   /// 3. Create an array of "contributor" chares.
   ///    Each of them will generate a number of objects to be collided.
   ///
-  /// 4. Invoke the DoIt method on all chares in the array of contributors.
+  /// 4. Invoke the Hello::DoIt method on all chares in the array of contributors.
   ///
   /// \see CollideCreate defined in collidecharm.{h,C}
   /// \see CollideSerialClient defined in collidecharm.{h,C}
